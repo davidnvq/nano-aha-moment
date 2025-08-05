@@ -6,6 +6,8 @@ wandb/
 *.py[cod]
 *$py.class
 hf_token
+checkpoints/
+Makefile
 
 # C extensions
 *.so
