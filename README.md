@@ -23,6 +23,9 @@ Inspired by [TinyZero](https://github.com/Jiayi-Pan/TinyZero) and [Mini-R1](http
 
 ## File Descriptions
 - `nano_r1.ipynb` is the interactive single file jupyter notebook with tutorial.
+- `notebook_train.py` is the script version of jupyter notebook with accompanying files in src.
+
+
 - `nano_r1_script.py` is also just the `nano_r1.ipynb` but for convenience of running with python and multi-GPU support.
 - `notebooks/checkpoint_playground.ipynb` is a notebook for comparing different model checkpoints (including our trained model) and playing with them.
 - [🤗 McGill-NLP/nano-aha-moment-3b](https://huggingface.co/McGill-NLP/nano-aha-moment-3b): The HF model trained using the above script (~60\% Accuracy on CountDown Task)
@@ -55,6 +58,11 @@ Inspired by [TinyZero](https://github.com/Jiayi-Pan/TinyZero) and [Mini-R1](http
 
 3. **Run the training script**  
    Open `nano_r1.ipynb` or `nano_r1_script.py` and start training.
+
+   ```
+   source .venv/bin/activate
+   uv run notebook_train.py
+   ```
 
    > If using uv, you can run with either `uv run nano_r1_script.py` or activate the env with `source .venv/bin/activate` and run with `python nano_r1_script.py`
 
