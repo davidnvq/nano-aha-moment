@@ -20,6 +20,7 @@ from src.data_utils import preprocess_example, create_training_episodes
 from src.reward_utils import compute_reward
 from src.grpo_loss import compute_pg_loss
 from src.config import TrainingArguments
+from transformers import HfArgumentParser
 
 if __name__ == "__main__":
 
@@ -38,7 +39,7 @@ if __name__ == "__main__":
     os.environ["WORLD_SIZE"] = "1"
 
     # Initialize training arguments
-    args = TrainingArguments()
+    args = HfArgumentParser(TrainingArguments).parse_args_into_dataclasses()[0]
 
     deepspeed_config = args.get_deepspeed_config()
     ref_deepspeed_config = args.get_ref_deepspeed_config()

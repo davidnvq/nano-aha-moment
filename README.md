@@ -62,6 +62,9 @@ Inspired by [TinyZero](https://github.com/Jiayi-Pan/TinyZero) and [Mini-R1](http
    ```
    source .venv/bin/activate
    uv run notebook_train.py
+
+   # support arguments: see src/config.py
+   uv run notebook_train.py --num_iterations 1200
    ```
 
    > If using uv, you can run with either `uv run nano_r1_script.py` or activate the env with `source .venv/bin/activate` and run with `python nano_r1_script.py`
