@@ -31,26 +31,26 @@ Inspired by [TinyZero](https://github.com/Jiayi-Pan/TinyZero) and [Mini-R1](http
 
 1. **Clone the repository**  
    ```bash
-   git clone https://github.com/McGill-NLP/nano-aha-moment.git
+   git clone git@github.com:davidnvq/nano-aha-moment.git
    ```
 
 2. **Install dependencies**  
-   First, make sure cuda 12.4 is installed.
-   
-   Install PyTorch:
-   ```bash
-   pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu124
-   ```
-   
-   Install the rest of the dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
 
    **Alternative Installation with uv (Optional)**  
    ```bash
+   uv venv
+
+   source .venv/bin/activate
+
    uv sync
-   uv sync --extra compile  # Install flash-attention
+   
+   # install flash-attn
+   # check -D_GLIBCXX_USE_CXX11_ABI in pytorch
+   # import torch; print(torch.__config__.show())
+   # Go to release page, download the compatible version: https://github.com/Dao-AILab/flash-attention/releases. Should be compatible with (python version, pytorch version, cxxabi, cuda version)
+
+   uv pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.5cxx11abiFALSE-cp311-cp311-linux_x86_64.whl
+   
    ```
 
 3. **Run the training script**  
