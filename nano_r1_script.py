@@ -68,12 +68,18 @@ def preprocess_example(
     target: int = example["target"]
 
     prefix = [
-        {"role": "system", "content": SYSTEM_MESSAGE},
+        {
+            "role": "system",
+            "content": SYSTEM_MESSAGE
+        },
         {
             "role": "user",
             "content": PROMPT_TEMPLATE.format(numbers=numbers, target=target),
         },
-        {"role": "assistant", "content": "Let me solve this step by step.\n<think>"},
+        {
+            "role": "assistant",
+            "content": "Let me solve this step by step.\n<think>"
+        },
     ]
     input_ids = tokenizer.apply_chat_template(prefix, tokenize=True, continue_final_message=True)
     prompt = tokenizer.decode(input_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
@@ -103,7 +109,7 @@ def format_reward_func(completion: str, EOS_TOKEN: str) -> float:
 
         # Strip EOS token if present
         if completion.endswith(EOS_TOKEN):
-            completion = completion[: -len(EOS_TOKEN)]
+            completion = completion[:-len(EOS_TOKEN)]
 
         # Check if the format is correct
         # Pattern means:
@@ -246,9 +252,8 @@ def create_training_episodes(
     assert len(all_generations) == len(samples) * GENERATIONS_PER_SAMPLE
 
     # Process responses and calculate rewards
-    groups = [
-        list(range(i, i + GENERATIONS_PER_SAMPLE)) for i in range(0, len(all_generations), GENERATIONS_PER_SAMPLE)
-    ]  # example: [[0, 1, 2], [3, 4, 5], [6, 7, 8]]
+    groups = [list(range(i, i + GENERATIONS_PER_SAMPLE)) for i in range(0, len(all_generations), GENERATIONS_PER_SAMPLE)
+             ]  # example: [[0, 1, 2], [3, 4, 5], [6, 7, 8]]
 
     all_query_token_ids, all_responses_token_ids, all_advantages = [], [], []
 
@@ -280,280 +285,6 @@ def create_training_episodes(
         for rm in reward_metrics:
             for k, v in rm.items():
                 stats.setdefault(f"reward_metrics/{k}", []).append(v)
-
-    episodes = {
-        "all_query_token_ids": all_query_token_ids,
-        "all_response_token_ids": all_responses_token_ids,
-        "all_advantages": all_advantages,
-    }
-
-    return episodes, stats
-
-
-def create_vineppo_training_episodes(
-    *,
-    inference_engine: LLM = None,
-    samples: List[Dict[str, Any]] = None,
-    all_generations: List[List[int]] = None,
-    all_finish_reasons: List[str] = None,
-    tokenizer: AutoTokenizer = None,
-    EOS_TOKEN_ID: int = None,
-    EOS_TOKEN: str = None,
-    GENERATIONS_PER_SAMPLE: int = None,
-    MAX_RESPONSE_TOKENS: int = None,
-    VINEPPO_K: int = None,
-    TEMPERATURE: float = None,
-    TOP_P: float = None,
-    TOP_K: int = None,
-) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """
-    *** EXPERIMENTAL ***
-    Process model generations and calculate rewards for VinePPO training episodes.
-
-    This function implements the VinePPO algorithm,
-    which uses Monte Carlo rollouts to estimate state values and compute token-level advantages.
-    See: https://arxiv.org/abs/2410.01679
-
-    Note that it only differs from GRPO in the way it computes advantages. So the rest of the code stays the same.
-
-    The algorithm works as follows:
-    1. Split each response into intermediate states (every 100 tokens)
-    2. For each intermediate state, generate VINEPPO_K Monte Carlo rollouts
-    3. Estimate state values by averaging rewards from these rollouts
-    4. Compute token-level advantages based on value differences between states
-
-    Args:
-        samples: List of input samples, each containing:
-            - input_ids: List[int], tokenized input prompt
-            - nums: List[int], numbers to use in equation
-            - target: int, target value for equation
-        all_generations: List of token ID sequences for each generated response
-        all_finish_reasons: List of finish reasons for each generation ("stop" or other)
-
-    Returns:
-        Tuple containing:
-        1. Dictionary with processed data for training:
-            - all_query_token_ids: List[List[int]], input token IDs repeated for each generation
-            - all_response_token_ids: List[List[int]], response token IDs with EOS tokens added
-            - all_advantages: List[List[float]], advantage values repeated for each token
-        2. Dictionary with generation statistics:
-            - response_lengths: List[int], lengths of generated responses
-            - rewards: List[float], raw reward values
-            - non_stop_rate: List[bool], whether each generation ended naturally
-            - reward_metrics/*: Various reward component metrics
-    """
-
-    def split_response(response_token_ids: List[int]) -> List[int]:
-        last_index = len(response_token_ids)
-        step_boundaries = [0]
-        cursor = 0
-        while cursor < last_index:
-            cursor += 100
-            if cursor >= last_index:
-                break
-            step_boundaries.append(cursor)
-
-        return step_boundaries
-
-    def estimate_values_by_mc_rollouts(episodes_raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        def get_response_prefixes(
-            response_token_ids: List[int], states_for_value_estimation: List[int]
-        ) -> List[List[int]]:
-            prefixes = []
-            for state in states_for_value_estimation:
-                prefixes.append(response_token_ids[:state])
-            return prefixes
-
-        def get_mc_queries(
-            query_token_ids: List[int], response_prefixes_token_ids: List[List[int]]
-        ) -> Tuple[List[List[int]], List[int]]:
-            prefix_queries_token_ids = []
-            max_tokens = []
-            for token_ids in response_prefixes_token_ids:
-                prefix_queries_token_ids.append(query_token_ids + token_ids)
-                max_tokens.append(MAX_RESPONSE_TOKENS - len(token_ids))  # this is how many response tokens are left.
-            return prefix_queries_token_ids, max_tokens
-
-        def get_value_estimates(
-            sample: Dict[str, Any], response_prefixes: List[List[int]], mcs_token_ids: List[List[int]]
-        ) -> List[float]:
-            values_estimates = []
-            for prefix, mcs in zip(response_prefixes, mcs_token_ids):
-                values = []
-                for mc in mcs:
-                    full_text = tokenizer.decode(prefix + mc, skip_special_tokens=False)
-                    score, _ = compute_reward(full_text, sample, EOS_TOKEN)
-                    values.append(score)
-                values_estimates.append(sum(values) / len(values))
-            return values_estimates
-
-        def update_state_values(
-            old_states: List[int],
-            old_value_estimates: List[float],
-            new_states: List[int],
-            new_value_estimates: List[float],
-        ) -> Tuple[List[int], List[float]]:
-            values = {}
-            for state, value_estimate in zip(old_states, old_value_estimates):
-                values[state] = value_estimate
-            for state, value_estimate in zip(new_states, new_value_estimates):
-                assert state not in values
-                values[state] = value_estimate
-            sorted_states = sorted(values.keys())
-            sorted_values = [values[state] for state in sorted_states]
-            return sorted_states, sorted_values
-
-        def extract_token_ids(vllm_outputs: List[CompletionOutput]) -> List[List[int]]:
-            return [list(out.token_ids) for out in vllm_outputs]
-
-        for eps in episodes_raw:
-            eps["value_estimates"] = [eps["reward"]]
-            eps["states"] = [len(eps["response_token_ids"])]
-            eps["new_states"] = split_response(eps["response_token_ids"])
-
-            # Get prefixes of from chunks of the response
-            # i.e. for response [A, B, C, D, E] with new_states [0, 2, 4]
-            # we get prefixes [[]], [A, B], [A, B, C, D]
-            eps["mc_response_prefixes_token_ids"] = get_response_prefixes(eps["response_token_ids"], eps["new_states"])
-
-            # Get MC queries where we just add the query to each prefix
-            eps["mc_queries_token_ids"], eps["mc_queries_max_tokens"] = get_mc_queries(
-                eps["query_token_ids"], eps["mc_response_prefixes_token_ids"]
-            )
-
-        # Flatten the MC queries to a single list which will be used for inference
-        flatten_mc_queries = []
-        flatten_mc_queries_max_tokens = []
-        queries_count = []
-        for eps in episodes_raw:
-            flatten_mc_queries.extend(eps["mc_queries_token_ids"])
-            flatten_mc_queries_max_tokens.extend(eps["mc_queries_max_tokens"])
-            queries_count.append(len(eps["mc_queries_token_ids"]))
-
-        # Auxiliary rollouts to get the value estimates
-        logger.info("Monte-Carlo value estimation...")
-        mc_outputs: List[RequestOutput] = inference_engine.generate(
-            prompt_token_ids=flatten_mc_queries,
-            sampling_params=[
-                SamplingParams(
-                    n=VINEPPO_K,
-                    temperature=TEMPERATURE,
-                    top_p=TOP_P,
-                    top_k=TOP_K,
-                    max_tokens=max_tokens,
-                    detokenize=False,
-                    stop_token_ids=[EOS_TOKEN_ID],
-                )
-                for max_tokens in flatten_mc_queries_max_tokens
-            ],
-        )
-
-        # Unflatten the MC rollouts
-        # [
-        #   // Episode 1
-        #   [
-        #     [tok1, tok2, ...],
-        #     [tok1, tok2, ...],
-        #     ...
-        #   ],
-        #   ...
-        # ]
-        unflattened_mc_token_ids: List[List[List[int]]] = []
-        start = 0
-        for count in queries_count:
-            output_slice = mc_outputs[start : start + count]
-            unflattened_mc_token_ids.append([extract_token_ids(out.outputs) for out in output_slice])
-            start += count
-
-        assert len(unflattened_mc_token_ids) == len(episodes_raw)
-
-        # Compute the value estimates based on avg. MC returns
-        for i, eps in enumerate(episodes_raw):
-            mc_token_ids = unflattened_mc_token_ids[i]
-            mc_value_estimates = get_value_estimates(
-                sample=eps["sample"],
-                response_prefixes=eps["mc_response_prefixes_token_ids"],
-                mcs_token_ids=mc_token_ids,
-            )
-            eps["states"], eps["value_estimates"] = update_state_values(
-                old_states=eps["states"],
-                old_value_estimates=eps["value_estimates"],
-                new_states=eps["new_states"],
-                new_value_estimates=mc_value_estimates,
-            )
-
-        # Remove unnecessary keys
-        for i, eps in enumerate(episodes_raw):
-            eps.pop("new_states")
-            eps.pop("mc_response_prefixes_token_ids")
-            eps.pop("mc_queries_token_ids")
-            eps.pop("mc_queries_max_tokens")
-
-        return episodes_raw
-
-    def get_tokens_advantages(states: List[int], value_estimates: List[float]) -> List[float]:
-        tokens_advantages = []
-        assert sorted(states) == states
-        for i in range(len(states) - 1):
-            length = states[i + 1] - states[i]
-            advantage = value_estimates[i + 1] - value_estimates[i]
-            tokens_advantages.extend([advantage] * length)
-        return tokens_advantages
-
-    assert len(all_generations) == len(all_finish_reasons)
-    assert len(all_generations) == len(samples) * GENERATIONS_PER_SAMPLE
-
-    # Process responses and calculate rewards
-    groups = [
-        list(range(i, i + GENERATIONS_PER_SAMPLE)) for i in range(0, len(all_generations), GENERATIONS_PER_SAMPLE)
-    ]  # example: [[0, 1, 2], [3, 4, 5], [6, 7, 8]]
-
-    all_query_token_ids, all_responses_token_ids, all_samples, all_rewards = [], [], [], []
-
-    stats = {
-        "response_lengths": [],
-        "rewards": [],
-        "non_stop_rate": [],
-    }
-
-    for sample, group_indices in zip(samples, groups):
-        finish_reasons = [all_finish_reasons[i] for i in group_indices]
-        response_token_ids = [all_generations[i] for i in group_indices]
-        responses = tokenizer.batch_decode(response_token_ids, skip_special_tokens=False)
-
-        rewards_and_metrics = [compute_reward(resp, sample, EOS_TOKEN) for resp in responses]
-        rewards, reward_metrics = zip(*rewards_and_metrics)
-
-        all_rewards.extend(rewards)
-        all_samples.extend([sample] * GENERATIONS_PER_SAMPLE)
-        all_query_token_ids.extend([sample["input_ids"]] * GENERATIONS_PER_SAMPLE)
-        all_responses_token_ids.extend(response_token_ids)
-
-        stats["rewards"].extend(rewards)
-        stats["non_stop_rate"].extend([fr != "stop" for fr in finish_reasons])
-        stats["response_lengths"].extend([len(ids) for ids in response_token_ids])
-        for rm in reward_metrics:
-            for k, v in rm.items():
-                stats.setdefault(f"reward_metrics/{k}", []).append(v)
-
-    raw_episodes: List[Dict[str, Any]] = []
-    for i in range(len(all_samples)):
-        eps = {
-            "query_token_ids": all_query_token_ids[i],
-            "response_token_ids": all_responses_token_ids[i],
-            "sample": all_samples[i],
-            "reward": all_rewards[i],
-            "states": [len(all_responses_token_ids[i])],
-            "value_estimates": [all_rewards[i]],
-            "new_states": split_response(all_responses_token_ids[i]),
-        }
-        raw_episodes.append(eps)
-
-    raw_episodes = estimate_values_by_mc_rollouts(raw_episodes)
-
-    all_advantages = []
-    for eps in raw_episodes:
-        all_advantages.append(get_tokens_advantages(eps["states"], eps["value_estimates"]))
 
     episodes = {
         "all_query_token_ids": all_query_token_ids,
@@ -696,8 +427,13 @@ def main(rank: int):
     VINEPPO_K = args.vineppo_k
     # DeepSpeed configuration
     deepspeed_config = {
-        "bf16": {"enabled": True},
-        "zero_optimization": {"stage": 2, "overlap_comm": False},
+        "bf16": {
+            "enabled": True
+        },
+        "zero_optimization": {
+            "stage": 2,
+            "overlap_comm": False
+        },
         "train_batch_size": EPISODES_PER_ITERATION,
         "train_micro_batch_size_per_gpu": PER_DEVICE_BATCH_SIZE,
         "gradient_accumulation_steps": EPISODES_PER_ITERATION_PER_RANK // PER_DEVICE_BATCH_SIZE,
@@ -715,7 +451,9 @@ def main(rank: int):
         },
     }
     ref_deepspeed_config = {
-        "bf16": {"enabled": True},
+        "bf16": {
+            "enabled": True
+        },
         # No effect
         "train_batch_size": EPISODES_PER_ITERATION,
         "train_micro_batch_size_per_gpu": PER_DEVICE_BATCH_SIZE,
@@ -738,16 +476,12 @@ def main(rank: int):
     # Prompts and Dataset
     ############################################
 
-    SYSTEM_MESSAGE = (
-        "You are a helpful assistant. You first think about the reasoning process in the mind "
-        "and then provide the user with the answer."
-    )
-    PROMPT_TEMPLATE = (
-        "Using the numbers {numbers}, create an equation that equals {target}. "
-        "You can use basic arithmetic operations (+, -, *, /) and each number can only be used once. "
-        "Show your work in <think> </think> tags. And return the final equation and answer in "
-        "<answer> </answer> tags, for example <answer>(1 + 2) / (3 * 5)</answer>."
-    )
+    SYSTEM_MESSAGE = ("You are a helpful assistant. You first think about the reasoning process in the mind "
+                      "and then provide the user with the answer.")
+    PROMPT_TEMPLATE = ("Using the numbers {numbers}, create an equation that equals {target}. "
+                       "You can use basic arithmetic operations (+, -, *, /) and each number can only be used once. "
+                       "Show your work in <think> </think> tags. And return the final equation and answer in "
+                       "<answer> </answer> tags, for example <answer>(1 + 2) / (3 * 5)</answer>.")
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     EOS_TOKEN_ID = tokenizer.eos_token_id
@@ -965,22 +699,6 @@ def main(rank: int):
                 GENERATIONS_PER_SAMPLE=GENERATIONS_PER_SAMPLE,
             )
         elif args.algorithm == "vineppo":
-            episodes, episodes_stats = create_vineppo_training_episodes(
-                inference_engine=inference_engine,
-                samples=samples,
-                all_generations=all_generations,
-                all_finish_reasons=all_finish_reasons,
-                tokenizer=tokenizer,
-                EOS_TOKEN_ID=EOS_TOKEN_ID,
-                EOS_TOKEN=EOS_TOKEN,
-                GENERATIONS_PER_SAMPLE=GENERATIONS_PER_SAMPLE,
-                MAX_RESPONSE_TOKENS=MAX_RESPONSE_TOKENS,
-                VINEPPO_K=VINEPPO_K,
-                TEMPERATURE=TEMPERATURE,
-                TOP_P=TOP_P,
-                TOP_K=TOP_K,
-            )
-        else:
             raise ValueError(f"Invalid algorithm: {args.algorithm}")
 
         inference_engine.sleep(1)
@@ -1019,20 +737,18 @@ def main(rank: int):
         with torch.no_grad():
             ref_log_probs = []
             for i in trange(
-                0,
-                EPISODES_PER_ITERATION_PER_RANK,
-                PER_DEVICE_BATCH_SIZE,
-                desc="Computing reference logprobs",
-                disable=dist.get_rank() != 0,
+                    0,
+                    EPISODES_PER_ITERATION_PER_RANK,
+                    PER_DEVICE_BATCH_SIZE,
+                    desc="Computing reference logprobs",
+                    disable=dist.get_rank() != 0,
             ):
-                batch = {k: v[i : i + PER_DEVICE_BATCH_SIZE] for k, v in model_inputs.items()}
-                ref_log_probs.append(
-                    compute_token_log_probs(
-                        model=reference_model,
-                        inputs=batch,
-                        temperature=TEMPERATURE,
-                    )
-                )
+                batch = {k: v[i:i + PER_DEVICE_BATCH_SIZE] for k, v in model_inputs.items()}
+                ref_log_probs.append(compute_token_log_probs(
+                    model=reference_model,
+                    inputs=batch,
+                    temperature=TEMPERATURE,
+                ))
             ref_log_probs = torch.cat(ref_log_probs)
             model_inputs["ref_log_probs"] = ref_log_probs
             del ref_log_probs
@@ -1049,14 +765,8 @@ def main(rank: int):
         total_response_len = (model_inputs["labels"] != -100).sum()
         train_time = time.time()
 
-        for i in trange(
-            0,
-            EPISODES_PER_ITERATION_PER_RANK,
-            PER_DEVICE_BATCH_SIZE,
-            desc="Gradient Accumulation",
-            disable=dist.get_rank() != 0,
-        ):
-            batch = {k: v[i : i + PER_DEVICE_BATCH_SIZE] for k, v in model_inputs.items()}
+        for i in trange(0, EPISODES_PER_ITERATION_PER_RANK, PER_DEVICE_BATCH_SIZE, desc="Gradient Accumulation", disable=dist.get_rank() != 0):
+            batch = {k: v[i:i + PER_DEVICE_BATCH_SIZE] for k, v in model_inputs.items()}
 
             # Compute policy gradient loss
             loss, loss_metrics = compute_pg_loss(
@@ -1106,7 +816,9 @@ def main(rank: int):
             logs = {
                 "iteration": iteration,
                 f"episodes/iter_{iteration:06d}": episode_table,
-                **{f"train/{k}": v for k, v in train_metrics.items()},
+                **{
+                    f"train/{k}": v for k, v in train_metrics.items()
+                },
             }
             if eval_stats is not None:
                 logs.update({f"eval/{k}": np.mean(v) for k, v in eval_stats.items()})

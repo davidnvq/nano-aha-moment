@@ -26,12 +26,18 @@ def create_prompt(
     prompt_template: str = DEFAULT_PROMPT_TEMPLATE,
 ) -> str:
     prefix = [
-        {"role": "system", "content": system_message},
+        {
+            "role": "system",
+            "content": system_message
+        },
         {
             "role": "user",
             "content": prompt_template.format(numbers=numbers, target=target),
         },
-        {"role": "assistant", "content": "Let me solve this step by step.\n<think>"},
+        {
+            "role": "assistant",
+            "content": "Let me solve this step by step.\n<think>"
+        },
     ]
     return tokenizer.apply_chat_template(prefix, tokenize=False, continue_final_message=True)
 
@@ -107,10 +113,7 @@ def prepare_model_inputs(
         inputs["labels_mask"].append(labels_mask)
 
     # Convert to tensors
-    return {
-        k: torch.tensor(v, dtype=torch.long if k != "advantages" else torch.float, device=device)
-        for k, v in inputs.items()
-    }
+    return {k: torch.tensor(v, dtype=torch.long if k != "advantages" else torch.float, device=device) for k, v in inputs.items()}
 
 
 @torch.compile(dynamic=True)
@@ -251,9 +254,7 @@ def evaluate_on_test_set(
         ... )
         >>> print(f"Average reward: {episodes_stats['rewards']:.3f}")
     """
-    generations = inference_engine.generate(
-        prompt_token_ids=test_dataset["input_ids"], sampling_params=eval_sampling_params
-    )
+    generations = inference_engine.generate(prompt_token_ids=test_dataset["input_ids"], sampling_params=eval_sampling_params)
 
     metrics = {
         "response_lengths": [],
@@ -303,9 +304,7 @@ def dump_episodes(
     rewards = episodes_stats["rewards"]
     response_lengths = episodes_stats["response_lengths"]
 
-    query_texts = tokenizer.batch_decode(
-        query_token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False
-    )
+    query_texts = tokenizer.batch_decode(query_token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
     response_texts = tokenizer.batch_decode(
         response_token_ids,
         skip_special_tokens=False,
@@ -344,14 +343,11 @@ def dump_episodes(
 
     with open(episodes_dir / f"eps_{iteration:06d}.json", "w") as f:
         json.dump(
-            [
-                {
-                    "query": query_texts[i],
-                    "response": response_texts[i],
-                    "reward": rewards[i],
-                }
-                for i in range(len(query_texts))
-            ],
+            [{
+                "query": query_texts[i],
+                "response": response_texts[i],
+                "reward": rewards[i],
+            } for i in range(len(query_texts))],
             f,
         )
 
@@ -417,9 +413,10 @@ def initialize_training_process_group(rank: int, world_size: int):
     torch.cuda.set_device(rank)
 
     if rank == 0:
-        print(
-            f"{'#' * 80}\n" f"# Initializing the training NCCL PG with\n" f"# world_size={world_size} \n" f"{'#' * 80}"
-        )
+        print(f"{'#' * 80}\n"
+              f"# Initializing the training NCCL PG with\n"
+              f"# world_size={world_size} \n"
+              f"{'#' * 80}")
 
     dist.init_process_group(
         backend="nccl",
@@ -429,15 +426,11 @@ def initialize_training_process_group(rank: int, world_size: int):
         timeout=timedelta(hours=1),
     )
     dist.barrier(device_ids=[rank])
-    print(
-        f"Rank{rank}: training NCCL PG initialized. "
-        f"(world_size={world_size}, local_rank={rank}, gpu_id={torch.cuda.current_device()})"
-    )
+    print(f"Rank{rank}: training NCCL PG initialized. "
+          f"(world_size={world_size}, local_rank={rank}, gpu_id={torch.cuda.current_device()})")
 
 
-def clean_up_checkpoints(
-    exp_dir: Path, keep_every_n_steps: Optional[int] = None, exclude: Optional[List[Path]] = None
-) -> None:
+def clean_up_checkpoints(exp_dir: Path, keep_every_n_steps: Optional[int] = None, exclude: Optional[List[Path]] = None) -> None:
     """
     Clean up checkpoint directories by removing unnecessary files and directories.
 
